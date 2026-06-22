@@ -1,23 +1,20 @@
-name: Build/release wheels for Windows x64
+name: Build wheels for Windows
 
 on:
   workflow_dispatch:
-    inputs:
-      custom_ref:
-        description: 'custom ref/tag'
-        required: false
-      do_release:
-        description: 'Creating release from artifacts: type "y" to enable'
-        required: false
+  workflow_call:
+  push:
+    tags:
+      - v*
+
 jobs:
-  build-w64:
-    runs-on:
-      - windows-latest
-      #x- windows-latest-arm64
+  build:
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: cmd
     strategy:
+      fail-fast: false
       matrix:
         python-version:
           - "3.10"
@@ -30,67 +27,25 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Run cmake
-        working-directory: .\lzo-2.10
-        run: |
-          md build
-          cd build
-          cmake ..
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-        # with:
-        #   msbuild-architecture: x64
-      - name: Build lzo static lib
-        working-directory: .\lzo-2.10\build
-        run: msbuild lzo_static_lib.vcxproj -p:Configuration=Release;Platform=x64;OutDir=..\
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-#          architecture: x64
       - name: Build wheel
         env:
           LZO_DIR: .\lzo-2.10
         run: |
-          python -m pip install -U pip wheel build
-          python -m build
-          ls -l dist
+          python -m pip install -U pip setuptools wheel build
+          python -m build -w --no-isolation
+      - name: Smoke-test wheel
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import lzo; d=b'test'*42; assert lzo.decompress(lzo.compress(d))==d; print('OK')"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.repository.name }}-py${{ matrix.python-version }}
+          name: ${{ github.event.repository.name }}-${{ matrix.os }}-py${{ matrix.python-version }}
           path: dist\*.whl
           overwrite: true
           if-no-files-found: error
-
-  release:
-    if: ${{ github.event.inputs.do_release == 'y' && github.event.inputs.custom_ref != '' }}
-    needs: [build-w64]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-          merge-multiple: true
-
-      - name: List all files
-        run: ls -R ./artifacts
-
-      - name: do release
-        run: |
-          gh release create '${{ github.event.inputs.custom_ref}}' \
-            -t '${{ github.event.inputs.custom_ref}}' \
-            --title "${{ github.event.repository.name }}-${{ github.event.inputs.custom_ref}}" \
-            --target '${{ github.ref_name }}' \
-            --latest=true \
-            --generate-notes \
-            --repo ${GITHUB_REPOSITORY}
-          gh release upload '${{ github.event.inputs.custom_ref}}' --repo ${GITHUB_REPOSITORY} --clobber \
-            ./artifacts/*
